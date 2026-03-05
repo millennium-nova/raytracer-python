@@ -1,0 +1,11 @@
+[workspace]
+authors = ["millennium-nova <higo.kazuki.tkb_cx@u.tsukuba.ac.jp>"]
+channels = ["conda-forge"]
+name = "raytracer-python"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+numpy = ">=2.4.2,<3"
