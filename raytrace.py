@@ -75,7 +75,7 @@ with open("render.ppm", "w") as f:
             dir_x = (x - W / 2) / W
             dir_y = -(y - H / 2) / W
             
-            # 方向ベクトルの生成と正規化
+            # レイの方向ベクトル (正規化しとく)
             direction = np.array([dir_x, dir_y, -1.0])
             direction = direction / np.linalg.norm(direction)
             
