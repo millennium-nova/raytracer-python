@@ -1,3 +1,3 @@
-### Python でレイトレを書いた
+### Python でレイトレ
 
 ![render](render.png)

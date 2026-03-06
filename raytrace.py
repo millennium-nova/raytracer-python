@@ -28,7 +28,7 @@ def intersect(origin, direction):
                 hit_obj = sphere
     return t_min, hit_obj
 
-# レイトレーシング処理
+# トレース
 def trace(origin, direction, depth):
     if depth <= 0: return np.array([0.0, 0.0, 0.0])
     
