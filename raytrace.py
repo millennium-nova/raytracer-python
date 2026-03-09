@@ -13,12 +13,12 @@ light_pos = np.array([10, 20, 10]) # 光源座標
 
 # レイと球の交差判定
 def intersect(origin, direction):
-    t_min = float('inf')
+    t_min = float('inf') 
     hit_obj = None
     for sphere in spheres:
         center, radius, _, _ = sphere
-        oc = origin - center # NumPyの引き算
-        b = np.dot(oc, direction) # NumPyの内積
+        oc = origin - center 
+        b = np.dot(oc, direction) # 内積
         c_val = np.dot(oc, oc) - radius**2
         disc = b**2 - c_val
         if disc > 0:
@@ -30,7 +30,7 @@ def intersect(origin, direction):
 
 # トレース
 def trace(origin, direction, depth):
-    if depth <= 0: return np.array([0.0, 0.0, 0.0])
+    if depth <= 0: return np.array([0.0, 0.0, 0.0]) # 再帰の深さ制限に到達したら黒
     
     t, obj = intersect(origin, direction)
     if not obj: return np.array([0.05, 0.05, 0.05]) # 背景色
@@ -67,8 +67,9 @@ W, H = 400, 300 # 解像度
 print(f"レンダリングを実行中: 画像サイズ ({W}x{H})")
 
 camera_origin = np.array([0.0, 0.0, 0.0])
+num_depth = 5
 
-with open("render.ppm", "w") as f:
+with open(f"render_depth_{num_depth}.ppm", "w") as f:
     f.write(f"P3\n{W} {H}\n255\n")
     for y in range(H):
         for x in range(W):
@@ -80,7 +81,7 @@ with open("render.ppm", "w") as f:
             direction = direction / np.linalg.norm(direction)
             
             # 光線を追跡
-            pixel_color = trace(camera_origin, direction, 3)
+            pixel_color = trace(camera_origin, direction, num_depth)
             
             # NumPyのclipを使って0.0〜1.0の範囲に収め、255を掛けて整数化
             color_255 = np.clip(pixel_color, 0, 1) * 255
@@ -89,4 +90,4 @@ with open("render.ppm", "w") as f:
             f.write(f"{r} {g} {b} ")
         f.write("\n")
 
-print("完了 'render.ppm' に画像を保存しました。")
+print(f"完了 'render_depth_{num_depth}.ppm' に画像を保存しました。")
