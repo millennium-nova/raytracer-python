@@ -1,259 +1,351 @@
 import math
-import numpy as np
+import os
+import sys
 from enum import Enum
 
-# マテリアルタイプ
+import numpy as np
+
+
 class Material(Enum):
-    DIFFUSE = 1      # 拡散反射（マット）
-    METAL = 2        # 金属
-    DIELECTRIC = 3   # 誘電体（ガラス）
+    DIFFUSE = 1
+    METAL = 2
+    DIELECTRIC = 3
 
-# シーン定義
-# 球体: (中心座標, 半径, 色, マテリアル, 反射率/屈折率/粗さ)
-# Material.DIFFUSE: 基本の色で拡散反射
-# Material.METAL: 金属色、粗さパラメータで反射の鋭さを制御
-# Material.DIELECTRIC: 屈折率、IOR（通常1.5ガラス）
+
+np.random.seed(0)
+
+preview_mode = ("--preview" in sys.argv) or os.getenv("RAYTRACE_PREVIEW", "0") == "1"
+
+
+# ============================================================
+# Scene
+# ============================================================
+
 spheres = [
-    # 地面 - 暗い拡散反射
-    (np.array([0, -10004, -20]), 10000, np.array([0.35, 0.35, 0.35]), Material.DIFFUSE, 0.0),
-    
-    # 赤い拡散反射球（左奥）
-    (np.array([-8, 1.5, -22]), 2.0, np.array([0.95, 0.2, 0.15]), Material.DIFFUSE, 0.0),
-    
-    # 磨かれた銀球（中央奥）
-    (np.array([0, 2.5, -24]), 2.2, np.array([0.95, 0.96, 1.0]), Material.METAL, 0.05),
-    
-    # ガラス球（中央前、見どころ）
-    (np.array([1, 2.8, -18]), 2.5, np.array([1.0, 1.0, 1.0]), Material.DIELECTRIC, 1.5),
-    
-    # 粗い銅球（右奥）
-    (np.array([8, 1.0, -20]), 1.8, np.array([0.95, 0.65, 0.3]), Material.METAL, 0.7),
-    
-    # 緑の拡散反射球（右手前）
-    (np.array([6, 1.2, -16]), 1.5, np.array([0.2, 0.85, 0.3]), Material.DIFFUSE, 0.0),
-    
-    # 小さい金属球（左手前、補助的）
-    (np.array([-4, 0.7, -15]), 0.8, np.array([0.85, 0.85, 0.9]), Material.METAL, 0.3),
+    # ground
+    (np.array([0.0, -1000.0, 0.0]), 1000.0,
+     np.array([0.48, 0.50, 0.52]), Material.DIFFUSE, 0.0),
+
+    # red diffuse sphere
+    (np.array([-1.15, 0.95, -0.35]), 0.95,
+     np.array([0.82, 0.28, 0.20]), Material.DIFFUSE, 0.0),
+
+    # center perfect mirror sphere
+    # 完全鏡面に近い中央球
+    (np.array([0.35, 1.05, 0.05]), 1.05,
+     np.array([1.00, 1.00, 1.00]), Material.METAL, 0.0),
+
+    # right greenish glossy metal sphere
+    # 緑色っぽい金属光沢の右球
+    (np.array([2.05, 0.78, 0.25]), 0.78,
+     np.array([0.34, 0.68, 0.52]), Material.METAL, 0.03),
+
+    # front green accent
+    (np.array([1.05, 0.38, -1.15]), 0.38,
+     np.array([0.22, 0.68, 0.30]), Material.DIFFUSE, 0.0),
+
+    # small left gold metal accent
+    (np.array([-2.65, 0.42, 0.30]), 0.42,
+     np.array([0.90, 0.76, 0.46]), Material.METAL, 0.08),
 ]
 
-# 複数の光源
+
 light_sources = [
-    (np.array([12, 25, 8]), np.array([1.0, 1.0, 0.98]), 1.2),    # 主光源（暖白色）
-    (np.array([-15, 18, -5]), np.array([0.6, 0.75, 1.0]), 0.5),  # 補助光源（寒色）
+    # warm key light
+    (np.array([-4.0, 7.0, 5.0]), np.array([1.0, 0.86, 0.68]), 1.8),
+
+    # cool fill light
+    (np.array([5.0, 5.5, 4.0]), np.array([0.55, 0.68, 1.0]), 0.55),
 ]
 
-# 環境光
-ambient_light = np.array([0.2, 0.2, 0.25])
+ambient_light = np.array([0.08, 0.09, 0.11])
 
-# ランダムな単位ベクトルを生成（球座標で高速化）
+
+# ============================================================
+# Utilities
+# ============================================================
+
+def normalize(v):
+    n = np.linalg.norm(v)
+    if n < 1e-12:
+        return v
+    return v / n
+
+
+def reflect(v, n):
+    return v - 2.0 * np.dot(v, n) * n
+
+
+def refract(uv, n, eta_ratio):
+    cos_theta = min(np.dot(-uv, n), 1.0)
+    r_out_perp = eta_ratio * (uv + cos_theta * n)
+    k = 1.0 - np.dot(r_out_perp, r_out_perp)
+    if k < 0.0:
+        return None
+    r_out_parallel = -math.sqrt(k) * n
+    return r_out_perp + r_out_parallel
+
+
+def schlick(cosine, ref_idx):
+    r0 = ((1.0 - ref_idx) / (1.0 + ref_idx)) ** 2
+    return r0 + (1.0 - r0) * ((1.0 - cosine) ** 5)
+
+
 def random_in_unit_sphere():
-    theta = np.random.uniform(0, 2 * np.pi)
-    phi = np.arccos(np.random.uniform(-1, 1))
-    sin_phi = np.sin(phi)
-    return np.array([sin_phi * np.cos(theta), sin_phi * np.sin(theta), np.cos(phi)])
+    while True:
+        p = np.random.uniform(-1.0, 1.0, 3)
+        if np.dot(p, p) < 1.0:
+            return p
 
-# Fresnel Schlick近似
-def schlick_fresnel(cos_angle, ior):
-    r0 = ((1.0 - ior) / (1.0 + ior)) ** 2
-    return r0 + (1 - r0) * (1 - cos_angle) ** 5
 
-# レイと球の交差判定
-def intersect(origin, direction):
-    t_min = float('inf') 
-    hit_obj = None
+def sky_color(direction):
+    d = normalize(direction)
+    t = 0.5 * (d[1] + 1.0)
+
+    bottom = np.array([0.86, 0.89, 0.94])
+    top = np.array([0.48, 0.66, 0.88])
+
+    return (1.0 - t) * bottom + t * top
+
+
+# ============================================================
+# Intersection
+# ============================================================
+
+def hit_sphere(origin, direction, sphere, t_min, t_max):
+    center, radius, color, material, param = sphere
+
+    oc = origin - center
+    a = np.dot(direction, direction)
+    half_b = np.dot(oc, direction)
+    c = np.dot(oc, oc) - radius * radius
+
+    disc = half_b * half_b - a * c
+    if disc < 0.0:
+        return None
+
+    sqrtd = math.sqrt(disc)
+
+    root = (-half_b - sqrtd) / a
+    if root < t_min or root > t_max:
+        root = (-half_b + sqrtd) / a
+        if root < t_min or root > t_max:
+            return None
+
+    pos = origin + root * direction
+    outward_normal = normalize(pos - center)
+
+    front_face = np.dot(direction, outward_normal) < 0.0
+    normal = outward_normal if front_face else -outward_normal
+
+    return {
+        "t": root,
+        "pos": pos,
+        "normal": normal,
+        "front_face": front_face,
+        "color": color,
+        "material": material,
+        "param": param,
+    }
+
+
+def intersect(origin, direction, t_min=1e-4, t_max=float("inf")):
+    closest = t_max
+    hit = None
+
     for sphere in spheres:
-        center, radius, _, _, _ = sphere
-        oc = origin - center 
-        b = np.dot(oc, direction)
-        oc_sq = np.dot(oc, oc)
-        c_val = oc_sq - radius * radius
-        disc = b * b - c_val
-        if disc > 0:
-            sqrt_disc = math.sqrt(disc)
-            t = -b - sqrt_disc
-            if 0.001 < t < t_min:
-                t_min = t
-                hit_obj = sphere
-    return t_min, hit_obj
+        h = hit_sphere(origin, direction, sphere, t_min, closest)
+        if h is not None:
+            closest = h["t"]
+            hit = h
 
-# トレース
-def trace(origin, direction, depth, rng_state=None):
-    if depth <= 0:
-        return np.array([0.0, 0.0, 0.0])
-    
-    t, obj = intersect(origin, direction)
-    if not obj:
-        # スカイボックス - グラデーション背景
-        t = 0.5 * (direction[1] + 1.0)
-        return np.array([0.2, 0.2, 0.3]) * (1 - t) + np.array([0.4, 0.6, 0.8]) * t
+    return hit
 
-    center, radius, color, material, param = obj
-    hit_pos = origin + direction * t
-    
-    # 法線の計算
-    normal = hit_pos - center
-    normal = normal / np.linalg.norm(normal)
-    
-    # 法線の向きを正す（背面除去）
-    if np.dot(direction, normal) > 0:
-        normal = -normal
 
-    # 環境光の基本値
+# ============================================================
+# Shading
+# ============================================================
+
+def direct_lighting(hit, view_dir):
+    pos = hit["pos"]
+    normal = hit["normal"]
+    color = hit["color"]
+    material = hit["material"]
+    param = hit["param"]
+
     result = ambient_light * color
 
-    # 各光源からのライティング
     for light_pos, light_color, intensity in light_sources:
-        light_dir = light_pos - hit_pos
-        dist = np.linalg.norm(light_dir)
-        light_dir = light_dir / dist
-        
-        # シャドウチェック
-        t_shadow, shadow_obj = intersect(hit_pos + normal * 0.001, light_dir)
-        
-        if shadow_obj is None or t_shadow > dist:
-            # ライティング計算
-            cos_angle = max(0.0, np.dot(normal, light_dir))
-            attenuation = intensity / (dist * dist * 0.01)
-            
-            if material == Material.DIFFUSE:
-                # ランバートの余弦則
-                result += color * light_color * cos_angle * attenuation
-            
-            elif material == Material.METAL:
-                # 金属反射（Blinn-Phong的）
-                half_vec = light_dir - direction
-                half_len_sq = np.dot(half_vec, half_vec)
-                if half_len_sq > 1e-12:
-                    half_dir = half_vec / math.sqrt(half_len_sq)
-                    spec_base = max(0.0, np.dot(normal, half_dir))
-                    if spec_base > 1e-6:
-                        spec = spec_base ** (1.0 / (param + 0.01))
-                        result += light_color * spec * attenuation * 0.5
-            
-            elif material == Material.DIELECTRIC:
-                # ガラスの表面反射
-                result += light_color * cos_angle * attenuation * 0.1
+        to_light = light_pos - pos
+        dist = np.linalg.norm(to_light)
+        light_dir = to_light / dist
 
-    # 再帰的反射/屈折
+        shadow = intersect(pos + normal * 1e-4, light_dir, 1e-4, dist - 1e-4)
+        if shadow is not None:
+            continue
+
+        ndotl = max(0.0, np.dot(normal, light_dir))
+        attenuation = intensity / (0.18 * dist * dist)
+
+        if material == Material.DIFFUSE:
+            result += color * light_color * ndotl * attenuation
+
+        elif material == Material.METAL:
+            half_dir = normalize(light_dir - view_dir)
+            spec = max(0.0, np.dot(normal, half_dir))
+
+            # param は粗さ。0 に近いほど鋭いハイライト
+            roughness = max(0.02, param)
+            shininess = 120.0 / roughness
+
+            result += color * light_color * (
+                0.14 * ndotl + 0.58 * (spec ** shininess)
+            ) * attenuation
+
+        elif material == Material.DIELECTRIC:
+            half_dir = normalize(light_dir - view_dir)
+            spec = max(0.0, np.dot(normal, half_dir)) ** 96
+            result += light_color * (0.04 * ndotl + 1.35 * spec) * attenuation
+
+    return result
+
+
+def trace(origin, direction, depth):
+    if depth <= 0:
+        return np.array([0.0, 0.0, 0.0])
+
+    hit = intersect(origin, direction)
+    if hit is None:
+        return sky_color(direction)
+
+    pos = hit["pos"]
+    normal = hit["normal"]
+    color = hit["color"]
+    material = hit["material"]
+    param = hit["param"]
+
+    result = direct_lighting(hit, direction)
+
     if material == Material.DIFFUSE:
-        # ランダムな拡散方向
-        random_dir = normal + random_in_unit_sphere()
-        random_dir_len_sq = np.dot(random_dir, random_dir)
-        if random_dir_len_sq > 1e-6:
-            random_dir = random_dir / math.sqrt(random_dir_len_sq)
-            reflected = trace(hit_pos, random_dir, depth - 1)
-            result += color * reflected * 0.4
-    
+        # preview では間接光を切って軽量・低ノイズにする
+        if not preview_mode:
+            scatter = normalize(normal + normalize(random_in_unit_sphere()))
+            indirect = trace(pos + normal * 1e-4, scatter, depth - 1)
+            result += 0.16 * color * indirect
+
     elif material == Material.METAL:
-        # 金属の鏡面反射（粗さで散乱）
-        dot_prod = np.dot(direction, normal)
-        ref_dir = direction - 2 * dot_prod * normal
-        random_scatter = random_in_unit_sphere() * param * 0.3
-        ref_dir = ref_dir + random_scatter
-        ref_dir_len_sq = np.dot(ref_dir, ref_dir)
-        if ref_dir_len_sq > 1e-6:
-            ref_dir = ref_dir / math.sqrt(ref_dir_len_sq)
-            reflected = trace(hit_pos, ref_dir, depth - 1)
-            result += reflected * 0.8
-    
+        # 安定重視: 金属反射ではランダム散乱しない
+        reflected = normalize(reflect(normalize(direction), normal))
+
+        if np.dot(reflected, normal) > 0.0:
+            # roughness に応じて反射寄与を少し下げる
+            reflection_strength = 0.78 * (1.0 - min(param, 0.8) * 0.45)
+            result += reflection_strength * color * trace(
+                pos + normal * 1e-4,
+                reflected,
+                depth - 1
+            )
+
     elif material == Material.DIELECTRIC:
-        # ガラスの屈折と反射
-        ior = param
-        dot_prod = np.dot(direction, normal)
-        cos_i = -dot_prod
-        cos_i = np.clip(cos_i, -1.0, 1.0)  # 数値誤差を防ぐ
-        
-        cos_i_sq = cos_i * cos_i
-        sin_i_sq = max(0.0, 1.0 - cos_i_sq)
-        sin_i = math.sqrt(sin_i_sq)
-        
-        # 全反射判定
-        sin_t = sin_i / ior
-        if sin_t > 1.0:
-            # 全反射
-            ref_dir = direction - 2 * dot_prod * normal
-            reflected = trace(hit_pos, ref_dir, depth - 1)
-            result += reflected
+        # 今回のシーンでは未使用。残しておくが、中央球には使わない。
+        ref_idx = param
+        eta_ratio = 1.0 / ref_idx if hit["front_face"] else ref_idx
+
+        unit_dir = normalize(direction)
+        cos_theta = min(np.dot(-unit_dir, normal), 1.0)
+        sin_theta = math.sqrt(max(0.0, 1.0 - cos_theta * cos_theta))
+
+        reflected = normalize(reflect(unit_dir, normal))
+        reflected_col = trace(pos + normal * 1e-4, reflected, depth - 1)
+
+        cannot_refract = eta_ratio * sin_theta > 1.0
+        fresnel = schlick(cos_theta, ref_idx)
+
+        if cannot_refract:
+            result += 0.90 * reflected_col
         else:
-            # Fresnel効果
-            cos_t_sq = max(0.0, 1.0 - sin_t * sin_t)
-            cos_t = math.sqrt(cos_t_sq)
-            fresnel = schlick_fresnel(cos_i, ior)
-            
-            # 反射
-            ref_dir = direction - 2 * dot_prod * normal
-            reflected = trace(hit_pos, ref_dir, depth - 1)
-            
-            # 屈折
-            refr_dir = (sin_i / ior) * (direction - cos_i * normal) - cos_t * normal
-            refracted = trace(hit_pos, refr_dir, depth - 1)
-            
-            result += reflected * fresnel + refracted * (1.0 - fresnel) * 0.95
+            refracted = refract(unit_dir, normal, eta_ratio)
+            if refracted is None:
+                result += 0.90 * reflected_col
+            else:
+                refracted = normalize(refracted)
 
-    return np.clip(result, 0, 1)
+                if hit["front_face"]:
+                    refract_origin = pos - normal * 1e-4
+                else:
+                    refract_origin = pos + normal * 1e-4
 
-# レンダリングと画像の出力
-W, H = 600, 450  # 解像度
-num_samples = 6  # アンチエイリアシングのサンプル数（高速化で余裕ができた）
-num_depth = 4    # トレース深度
-print(f"レンダリングを実行中: 画像サイズ ({W}x{H}), サンプル: {num_samples}, 深度: {num_depth}")
+                refracted_col = trace(refract_origin, refracted, depth - 1)
+                attenuation = np.array([0.96, 0.98, 1.0])
 
-camera_origin = np.array([2.0, 3.0, 8.0])  # カメラ位置（右高い）
-camera_target = np.array([0.5, 1.5, -18.0])  # 注視点（ガラス球付近）
+                result += 0.88 * attenuation * (
+                    fresnel * reflected_col + (1.0 - fresnel) * refracted_col
+                )
 
-# カメラの方向ベクトルを計算
-forward = camera_target - camera_origin
-forward = forward / np.linalg.norm(forward)
-right = np.cross(forward, np.array([0, 1, 0]))
-right = right / np.linalg.norm(right)
-up = np.cross(right, forward)
-up = up / np.linalg.norm(up)
+    return np.clip(result, 0.0, 1.0)
 
-fov = 45.0  # 視野角
-aspect_ratio = W / H
-vfov_rad = math.radians(fov)
-viewport_height = 2.0 * math.tan(vfov_rad / 2.0)
-viewport_width = viewport_height * aspect_ratio
 
-with open(f"render_depth_{num_depth}.ppm", "w") as f:
+# ============================================================
+# Camera
+# ============================================================
+
+if preview_mode:
+    W, H = 320, 180
+    samples = 2
+    max_depth = 3
+else:
+    W, H = 800, 450
+    samples = 24
+    max_depth = 8
+
+fov = 32.0
+
+camera_origin = np.array([4.2, 1.75, 5.2])
+camera_target = np.array([0.15, 0.75, -0.10])
+
+forward = normalize(camera_target - camera_origin)
+right = normalize(np.cross(forward, np.array([0.0, 1.0, 0.0])))
+up = normalize(np.cross(right, forward))
+
+aspect = W / H
+viewport_h = 2.0 * math.tan(math.radians(fov) * 0.5)
+viewport_w = aspect * viewport_h
+
+
+# ============================================================
+# Render
+# ============================================================
+
+print(f"rendering: {W}x{H}, samples={samples}, depth={max_depth}, preview={preview_mode}")
+
+with open("render.ppm", "w") as f:
     f.write(f"P3\n{W} {H}\n255\n")
-    
+
     for y in range(H):
-        if y % 50 == 0:
-            print(f"  レンダリング進行中: {y}/{H}")
-        
+        if y % 40 == 0:
+            print(f"{y}/{H}")
+
         for x in range(W):
-            pixel_color = np.array([0.0, 0.0, 0.0])
-            
-            # マルチサンプリング
-            for s in range(num_samples):
-                # サブピクセル位置
-                u = (x + np.random.uniform(0, 1)) / W
-                v = (y + np.random.uniform(0, 1)) / H
-                
-                # ビューポート上の位置
-                viewport_x = (u - 0.5) * viewport_width
-                viewport_y = -(v - 0.5) * viewport_height
-                
-                # レイ方向
-                direction = forward + viewport_x * right + viewport_y * up
-                direction = direction / np.linalg.norm(direction)
-                
-                # トレース
-                sample_color = trace(camera_origin, direction, num_depth)
-                pixel_color += sample_color
-            
-            # 平均化
-            pixel_color = pixel_color / num_samples
-            
-            # ガンマ補正 (ガンマ = 2.2)
-            pixel_color = np.power(pixel_color, 1.0 / 2.2)
-            
-            # 0-255に変換
-            color_255 = np.clip(pixel_color, 0, 1) * 255
-            r, g, b = color_255.astype(int)
-            
+            pixel = np.array([0.0, 0.0, 0.0])
+
+            for _ in range(samples):
+                u = (x + np.random.random()) / (W - 1)
+                v = (y + np.random.random()) / (H - 1)
+
+                px = (u - 0.5) * viewport_w
+                py = -(v - 0.5) * viewport_h
+
+                ray_dir = normalize(forward + px * right + py * up)
+                pixel += trace(camera_origin, ray_dir, max_depth)
+
+            pixel /= samples
+
+            # gamma correction
+            pixel = np.power(np.clip(pixel, 0.0, 1.0), 1.0 / 2.2)
+
+            r, g, b = (255.999 * np.clip(pixel, 0.0, 0.999)).astype(int)
             f.write(f"{r} {g} {b} ")
+
         f.write("\n")
 
-print(f"完了！'render_depth_{num_depth}.ppm' に画像を保存しました。")
+print("done: render.ppm")
